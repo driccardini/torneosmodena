@@ -2,6 +2,9 @@ import streamlit as st
 from pathlib import Path
 import base64
 from typing import Optional
+import html
+import re
+import requests
 
 
 DRIVE_FOLDERS = {
@@ -29,10 +32,77 @@ def folder_share_url(folder_id: str) -> str:
     return f"https://drive.google.com/drive/folders/{folder_id}"
 
 
+def file_view_url(file_id: str) -> str:
+    return f"https://drive.google.com/file/d/{file_id}/view"
+
+
+def file_thumbnail_url(file_id: str, width: int = 1200) -> str:
+    return f"https://drive.google.com/thumbnail?id={file_id}&sz=w{width}"
+
+
+@st.cache_data(ttl=600)
+def get_folder_images(folder_id: str) -> list[dict[str, str]]:
+    response = requests.get(folder_share_url(folder_id), timeout=30)
+    response.raise_for_status()
+    page = response.text
+
+    image_pattern = re.compile(
+        r'\[null,&quot;(?P<id>[A-Za-z0-9_-]{20,})&quot;\],null,null,null,&quot;'
+        r'(?P<mime>image/(?:jpeg|jpg|png|webp|heic|heif))&quot;.*?'
+        r'\[\[\[&quot;(?P<name>[^&]+?\.(?:jpg|jpeg|png|webp|heic|heif))&quot;',
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    images: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
+    for match in image_pattern.finditer(page):
+        file_id = match.group("id")
+        if file_id in seen_ids:
+            continue
+        seen_ids.add(file_id)
+        images.append(
+            {
+                "id": file_id,
+                "name": html.unescape(match.group("name")),
+                "mime": match.group("mime"),
+            }
+        )
+
+    return images
+
+
 def render_folder(name: str, folder_id: str) -> None:
     st.subheader(name)
-    st.markdown(f"[Open in Google Drive]({folder_share_url(folder_id)})")
-    st.components.v1.iframe(folder_embed_url(folder_id), height=900, scrolling=True)
+    st.link_button(
+        "Open in Google Drive",
+        folder_share_url(folder_id),
+        use_container_width=True,
+    )
+
+    try:
+        images = get_folder_images(folder_id)
+    except requests.RequestException:
+        st.warning("Could not load photos right now. Please try again in a few seconds.")
+        return
+
+    if not images:
+        st.info("No photos found in this folder yet.")
+        return
+
+    photo_items = "\n".join(
+        (
+            f'<a class="photo-link" href="{file_view_url(image["id"])}" target="_blank" '
+            f'rel="noopener noreferrer">'
+            f'<img src="{file_thumbnail_url(image["id"])}" alt="Photo" loading="lazy" />'
+            "</a>"
+        )
+        for image in images
+    )
+
+    st.markdown(
+        f'<div class="photo-grid">{photo_items}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def set_logo_background() -> None:
@@ -86,6 +156,73 @@ def set_text_colors() -> None:
 
             button[data-baseweb="tab"] {
                 color: #000000 !important;
+            }
+
+            div[data-testid="stTabs"] button[data-baseweb="tab"] {
+                font-size: 1.05rem;
+                font-weight: 700;
+                min-height: 48px;
+            }
+
+            @media (max-width: 768px) {
+                h1 {
+                    font-size: 1.65rem !important;
+                    line-height: 1.2;
+                }
+
+                .subtitle {
+                    font-size: 1.1rem;
+                    margin-top: 0;
+                }
+
+                .stApp {
+                    background-attachment: scroll !important;
+                }
+
+                .block-container {
+                    padding-top: 1rem;
+                    padding-left: 0.85rem;
+                    padding-right: 0.85rem;
+                }
+
+                div[data-testid="stTabs"] button[data-baseweb="tab"] {
+                    font-size: 1rem;
+                    min-height: 50px;
+                }
+            }
+
+            .photo-grid {
+                display: grid;
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+                gap: 0.75rem;
+                margin-top: 0.75rem;
+            }
+
+            .photo-link {
+                display: block;
+                border-radius: 0.6rem;
+                overflow: hidden;
+                background: rgba(255, 255, 255, 0.5);
+            }
+
+            .photo-link img {
+                width: 100%;
+                height: 100%;
+                display: block;
+                object-fit: cover;
+                aspect-ratio: 1 / 1;
+            }
+
+            @media (max-width: 1024px) {
+                .photo-grid {
+                    grid-template-columns: repeat(2, minmax(0, 1fr));
+                }
+            }
+
+            @media (max-width: 640px) {
+                .photo-grid {
+                    grid-template-columns: 1fr;
+                }
             }
         </style>
         """,
